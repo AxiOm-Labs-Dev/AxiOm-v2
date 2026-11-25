@@ -217,49 +217,32 @@ class _ServerSelectorBody extends HookConsumerWidget {
       return null;
     }, [itemsSignature, live]);
 
-    // Enforce the remembered (non-auto) selection so the core does not silently
-    // fall back to another server on reconnect/restart.
+    // Запомненный выбор не перезаписывается, когда сервера сейчас нет (как в SBX). На это время действует замена:
+    // та же страна — по флагу или названию, а не по точной строке («🇺🇸 USA dev» и «🇺🇸 USA» — одна), тот же или
+    // первый протокол и транспорт; страны нет вовсе — авто. Вернётся сервер — вернётся и выбор.
+    final remembered = selectedCountry.value;
+    final effective = ServerOption.resolveSelection(
+      options,
+      remembered,
+      selectedProtocol.value,
+      selectedTransport.value,
+    );
+    // Пока список пуст (ещё не загружен), выбор показывается как есть.
+    final missing =
+        remembered != null && remembered != ServerOption.autoCountryKey && options.isNotEmpty && effective == null;
+    final isAuto = remembered == ServerOption.autoCountryKey || missing;
+    bool differs(String? wanted, String actual) => wanted != null && wanted.isNotEmpty && wanted != actual;
+    final substituted = effective != null &&
+        (effective.country != remembered ||
+            differs(selectedProtocol.value, effective.protocol) ||
+            differs(selectedTransport.value, effective.transport));
+
+    // Держать ядро на сервере выбора (или его замене), чтобы при переподключении оно не ушло на другой.
     useEffect(() {
-      if (options.isEmpty || selectedCountry.value == ServerOption.autoCountryKey) return null;
-      final c = selectedCountry.value;
-      if (c == null) return null;
-      final protocols = ServerOption.protocolsFor(options, c);
-      if (protocols.isEmpty) {
-        // Remembered country is no longer available — fall back to auto.
-        selectedCountry.value = ServerOption.autoCountryKey;
-        if (cliSync) {
-          Future.microtask(() => writeSelection(c: ServerOption.autoCountryKey)); // не во время build
-        } else {
-          countryPref.write(ServerOption.autoCountryKey);
-        }
-        return null;
-      }
-      final p = protocols.contains(selectedProtocol.value) ? selectedProtocol.value! : protocols.first;
-      if (selectedProtocol.value != p) {
-        selectedProtocol.value = p;
-        if (cliSync) {
-          Future.microtask(() => writeSelection(p: p));
-        } else {
-          protocolPref.write(p);
-        }
-      }
-      final available = ServerOption.transportsFor(options, c, p);
-      if (available.isEmpty) return null;
-      final tr = available.contains(selectedTransport.value) ? selectedTransport.value! : available.first;
-      if (selectedTransport.value != tr) {
-        selectedTransport.value = tr;
-        if (cliSync) {
-          Future.microtask(() => writeSelection(t: tr));
-        } else {
-          transportPref.write(tr);
-        }
-      }
-      final option = ServerOption.find(options, c, p, tr);
-      if (live && option != null && selectedRawTag != option.rawTag) {
-        Future.microtask(
-          () => ref.read(proxiesOverviewNotifierProvider.notifier).changeProxy(groupTag!, option.rawTag),
-        );
-      }
+      if (!live || effective == null || selectedRawTag == effective.rawTag) return null;
+      Future.microtask(
+        () => ref.read(proxiesOverviewNotifierProvider.notifier).changeProxy(groupTag!, effective.rawTag),
+      );
       return null;
     }, [itemsSignature, selectedCountry.value, selectedProtocol.value, selectedTransport.value]);
 
@@ -268,7 +251,7 @@ class _ServerSelectorBody extends HookConsumerWidget {
     // loop endlessly when all servers are unreachable.
     final autoTested = useRef(false);
     useEffect(() {
-      if (!live || options.isEmpty || selectedCountry.value != ServerOption.autoCountryKey) {
+      if (!live || options.isEmpty || !isAuto) {
         autoTested.value = false;
         return null;
       }
@@ -280,27 +263,29 @@ class _ServerSelectorBody extends HookConsumerWidget {
         () => ref.read(proxiesOverviewNotifierProvider.notifier).urlTest(groupTag!),
       );
       return null;
-    }, [itemsSignature, selectedCountry.value]);
+    }, [itemsSignature, selectedCountry.value, isAuto]);
 
     useEffect(() {
-      if (!live || options.isEmpty || selectedCountry.value != ServerOption.autoCountryKey) return null;
+      if (!live || options.isEmpty || !isAuto) return null;
 
       Future.microtask(() async {
         final best = ServerOption.fastest(options);
         if (best == null) return;
-        selectedProtocol.value = best.protocol;
-        selectedTransport.value = best.transport;
+        if (!missing) {
+          // выбрано само авто; при временном авто (страны нет) запомненные протокол и транспорт не трогаем
+          selectedProtocol.value = best.protocol;
+          selectedTransport.value = best.transport;
+        }
         if (selectedRawTag != best.rawTag) {
           await ref.read(proxiesOverviewNotifierProvider.notifier).changeProxy(groupTag!, best.rawTag);
         }
       });
       return null;
-    }, [itemsSignature, selectedCountry.value]);
+    }, [itemsSignature, selectedCountry.value, isAuto]);
 
-    final isAuto = selectedCountry.value == ServerOption.autoCountryKey;
-    final country = isAuto ? fastestOption?.country : selectedCountry.value;
-    final protocol = isAuto ? fastestOption?.protocol : selectedProtocol.value;
-    final transport = isAuto ? fastestOption?.transport : selectedTransport.value;
+    final country = isAuto ? fastestOption?.country : (effective?.country ?? remembered);
+    final protocol = isAuto ? fastestOption?.protocol : (effective?.protocol ?? selectedProtocol.value);
+    final transport = isAuto ? fastestOption?.transport : (effective?.transport ?? selectedTransport.value);
     final protocols = !isAuto && country != null ? ServerOption.protocolsFor(options, country) : <String>[];
     final transports = !isAuto && country != null && protocol != null
         ? ServerOption.transportsFor(options, country, protocol)
@@ -484,13 +469,14 @@ class _ServerSelectorBody extends HookConsumerWidget {
                 }).toList(),
                 onChanged: (value) async {
                   if (value == null) return;
+                  selectedCountry.value = country;
                   selectedProtocol.value = value;
                   final nextTransports = ServerOption.transportsFor(options, country, value);
                   final nextTransport = nextTransports.contains(selectedTransport.value)
                       ? selectedTransport.value!
                       : nextTransports.first;
                   selectedTransport.value = nextTransport;
-                  await writeSelection(p: value, t: nextTransport);
+                  await writeSelection(c: country, p: value, t: nextTransport);
                   if (forwardToCli()) return;
                   await applySelection(country, value, nextTransport);
                 },
@@ -564,8 +550,10 @@ class _ServerSelectorBody extends HookConsumerWidget {
                 }).toList(),
                 onChanged: (value) async {
                   if (value == null) return;
+                  selectedCountry.value = country;
+                  selectedProtocol.value = protocol;
                   selectedTransport.value = value;
-                  await writeSelection(t: value);
+                  await writeSelection(c: country, p: protocol, t: value);
                   if (forwardToCli()) return;
                   await applySelection(country, protocol, value);
                 },
@@ -634,6 +622,18 @@ class _ServerSelectorBody extends HookConsumerWidget {
           buildProtocolRow(ref),
           const Gap(10),
           buildTransportRow(ref),
+          if (missing || substituted) ...[
+            const Gap(8),
+            Text(
+              'Выбранного сервера (${[
+                remembered!,
+                if (selectedProtocol.value?.isNotEmpty ?? false) ServerOption.protocolLabel(selectedProtocol.value!),
+                if (selectedTransport.value?.isNotEmpty ?? false) ServerOption.transportLabel(selectedTransport.value!),
+              ].join(' · ')}) сейчас нет — пока ${missing ? 'авто' : 'используется ближайший'}; '
+              'когда он вернётся, вернётся и выбор',
+              style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            ),
+          ],
           if (!live) ...[
             const Gap(8),
             Text(

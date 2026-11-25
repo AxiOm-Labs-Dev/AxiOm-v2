@@ -99,4 +99,49 @@ void main() {
       );
     });
   });
+
+  group('remembered selection', () {
+    ServerOption o(String country, String protocol, String transport) => ServerOption(
+          country: country,
+          protocol: protocol,
+          transport: transport,
+          rawTag: '$country [$transport]',
+          delay: 100,
+        );
+
+    test('countryCode reads the flag or the name, English or Russian', () {
+      for (final name in ['🇺🇸 USA dev', 'USA', 'United States', 'США', 'usa-dev']) {
+        expect(ServerOption.countryCode(name), 'US', reason: name);
+      }
+      expect(ServerOption.countryCode('🇩🇪Германия [Билайн]'), 'DE');
+      expect(ServerOption.countryCode('Germany #2'), 'DE');
+      expect(ServerOption.countryCode('South Korea'), 'KR');
+      expect(ServerOption.countryCode('🔁 Запасной'), isNull);
+      expect(ServerOption.countryCode(''), isNull);
+    });
+
+    test('a renamed country is found by its code, the exact name wins', () {
+      final renamed = [o('🇺🇸 USA', 'vless', 'ws'), o('Germany', 'vless', 'ws')];
+      expect(ServerOption.resolveCountry(renamed, '🇺🇸 USA dev'), '🇺🇸 USA');
+      expect(ServerOption.resolveCountry(renamed, 'Germany'), 'Germany');
+      expect(ServerOption.resolveCountry([...renamed, o('🇺🇸 USA dev', 'vless', 'ws')], '🇺🇸 USA dev'), '🇺🇸 USA dev');
+      expect(ServerOption.resolveCountry(renamed, 'France'), isNull);
+    });
+
+    test('resolveSelection: same or first protocol and transport; none while the country is missing', () {
+      final options = [
+        o('Germany', 'vless', 'tcp'),
+        o('Germany', 'hysteria2', 'hy2'),
+        o('France', 'vless', 'ws'),
+      ];
+      expect(ServerOption.resolveSelection(options, 'Germany', 'vless', 'ws')?.rawTag, 'Germany [tcp]');
+      expect(ServerOption.resolveSelection(options, 'Germany', 'naive', 'naive')?.rawTag, 'Germany [tcp]');
+      expect(ServerOption.resolveSelection(options, 'Germany', 'hysteria2', 'hy2')?.rawTag, 'Germany [hy2]');
+      expect(ServerOption.resolveSelection(options, 'Poland', 'vless', 'ws'), isNull);
+      expect(ServerOption.resolveSelection(options, ServerOption.autoCountryKey, '', ''), isNull);
+      // выбор не меняется — вернулся транспорт, вернулся и сервер
+      final back = [...options, o('Germany', 'vless', 'ws')];
+      expect(ServerOption.resolveSelection(back, 'Germany', 'vless', 'ws')?.rawTag, 'Germany [ws]');
+    });
+  });
 }

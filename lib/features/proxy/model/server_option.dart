@@ -167,11 +167,125 @@ class ServerOption {
   };
 
   static String countryFlagEmoji(String country) {
-    final iso = _countryNameToIso[country.trim().toLowerCase()];
+    final iso = countryCode(country);
     if (iso == null || iso.length != 2) return '🏳️';
     final upper = iso.toUpperCase();
     return String.fromCharCodes(upper.codeUnits.map((c) => c + 127397));
   }
+
+  /// Код страны ISO по флагу-эмодзи или по названию (английскому или русскому), целиком или словами внутри:
+  /// «🇺🇸 USA dev», «USA», «United States» и «США» — одна страна. Те же правила — у `country_code` в SBX.
+  static String? countryCode(String name) {
+    final flag = name.runes.where((r) => r >= 0x1F1E6 && r <= 0x1F1FF).map((r) => r - 0x1F1E6).toList();
+    if (flag.length >= 2) return String.fromCharCodes([65 + flag[0], 65 + flag[1]]);
+    final words = name
+        .toLowerCase()
+        .split(RegExp(r'[^\p{L}]+', unicode: true))
+        .where((w) => w.isNotEmpty)
+        .join(' ');
+    if (words.isEmpty) return null;
+    final exact = _countryNames[words];
+    if (exact != null) return exact;
+    final padded = ' $words ';
+    String? best;
+    for (final key in _countryNames.keys) {
+      if (padded.contains(' $key ') && (best == null || key.length > best.length)) best = key;
+    }
+    return best == null ? null : _countryNames[best];
+  }
+
+  /// Страна запомненного выбора -> страна из списка: та же строка, иначе страна с тем же кодом
+  /// (первая по алфавиту, как в меню), иначе null — такой страны сейчас нет.
+  static String? resolveCountry(List<ServerOption> options, String country) {
+    final list = countries(options).toList()..sort((a, b) => a.compareTo(b));
+    if (list.contains(country)) return country;
+    final code = countryCode(country);
+    if (code == null) return null;
+    for (final c in list) {
+      if (countryCode(c) == code) return c;
+    }
+    return null;
+  }
+
+  /// Сервер для запомненного выбора: страна по [resolveCountry], тот же протокол или первый, тот же транспорт
+  /// или первый. null — авто или такой страны сейчас нет: тогда на время действует авто, а сам выбор
+  /// не меняется и вернётся вместе с сервером. Те же правила — у `axiom_chosen` в SBX.
+  static ServerOption? resolveSelection(
+    List<ServerOption> options,
+    String? country,
+    String? protocol,
+    String? transport,
+  ) {
+    if (country == null || country == autoCountryKey) return null;
+    final c = resolveCountry(options, country);
+    if (c == null) return null;
+    final protocols = protocolsFor(options, c);
+    if (protocols.isEmpty) return null;
+    final p = protocols.contains(protocol) ? protocol! : protocols.first;
+    final transports = transportsFor(options, c, p);
+    if (transports.isEmpty) return null;
+    final t = transports.contains(transport) ? transport! : transports.first;
+    return find(options, c, p, t);
+  }
+
+  static final Map<String, String> _countryNames = {
+    ..._countryNameToIso,
+    'united states of america': 'US',
+    'great britain': 'GB',
+    'england': 'GB',
+    'holland': 'NL',
+    'нидерланды': 'NL',
+    'голландия': 'NL',
+    'франция': 'FR',
+    'россия': 'RU',
+    'польша': 'PL',
+    'германия': 'DE',
+    'сша': 'US',
+    'соединённые штаты': 'US',
+    'соединенные штаты': 'US',
+    'великобритания': 'GB',
+    'британия': 'GB',
+    'англия': 'GB',
+    'финляндия': 'FI',
+    'швеция': 'SE',
+    'норвегия': 'NO',
+    'турция': 'TR',
+    'япония': 'JP',
+    'сингапур': 'SG',
+    'канада': 'CA',
+    'италия': 'IT',
+    'испания': 'ES',
+    'швейцария': 'CH',
+    'австрия': 'AT',
+    'бельгия': 'BE',
+    'чехия': 'CZ',
+    'румыния': 'RO',
+    'украина': 'UA',
+    'казахстан': 'KZ',
+    'гонконг': 'HK',
+    'тайвань': 'TW',
+    'южная корея': 'KR',
+    'корея': 'KR',
+    'индия': 'IN',
+    'бразилия': 'BR',
+    'австралия': 'AU',
+    'израиль': 'IL',
+    'оаэ': 'AE',
+    'эмираты': 'AE',
+    'ирландия': 'IE',
+    'дания': 'DK',
+    'португалия': 'PT',
+    'венгрия': 'HU',
+    'болгария': 'BG',
+    'сербия': 'RS',
+    'латвия': 'LV',
+    'литва': 'LT',
+    'эстония': 'EE',
+    'молдова': 'MD',
+    'грузия': 'GE',
+    'армения': 'AM',
+    'азербайджан': 'AZ',
+  };
 
   static const Map<String, String> _countryNameToIso = {
     'netherlands': 'NL',
